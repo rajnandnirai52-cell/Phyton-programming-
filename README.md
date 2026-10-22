@@ -1,70 +1,69 @@
-# Quiz Application
+# File Organizer Tool
 
-A Python quiz app with a console UI (default) and an optional Tkinter GUI.
+A Python tool that automatically organizes messy folders — console UI by
+default, optional Tkinter GUI.
 
 ## Features
-- Random question selection from a JSON question bank, optionally filtered by category
-- Per-question countdown timer (console: `select`-based on Linux/macOS with a threaded
-  fallback on Windows; GUI: a live `after()`-driven countdown)
-- Negative marking scheme (default: correct **+4**, wrong **-1**, unanswered **0** — tunable)
-- Leaderboard: every attempt is recorded and ranked by score, filterable by category
-- Category-based quizzes (General Knowledge, Science, Programming, History by default —
-  just edit `data/questions.json` to add your own)
-- Optional Tkinter GUI with the same engine/leaderboard underneath
-- Custom exceptions for empty question banks, insufficient questions, and bad input
+- **Automatic categorization** — sorts files into subfolders (Images, Documents,
+  Spreadsheets, Presentations, Audio, Video, Archives, Code, Executables, Others)
+  based on extension
+- **Duplicate detection** — finds files with identical content via SHA-256 hashing,
+  using a 3-stage filter (group by size → hash first 64 KB → full hash) so big folders
+  stay fast. Skips `.git`, `node_modules`, `venv`, `__pycache__` etc., ignores empty
+  files and symlinks, shows live progress, and Ctrl+C cancels safely
+- **Duplicate quarantine** — moves all but one copy of each duplicate group into a
+  `_duplicates_quarantine` folder rather than deleting them, so it's always reversible
+- **Batch rename** — rename many files at once using a pattern with placeholders:
+  `{name}`, `{ext}`, `{index}`, `{parent}`
+- **Operation log** — every categorize / quarantine / rename run is recorded with a
+  timestamp and the exact file moves it made
+- **Undo last operation** — reverses the most recent operation, move for move
+- **Optional Tkinter GUI** — folder picker, one-click actions, a rename dialog, and
+  an in-window log/undo panel
 
 ## Structure
 ```
 main.py                        # entry point: `python main.py` or `python main.py --gui`
-quiz_system/
-    models.py                  # Question, LeaderboardEntry dataclasses
-    storage.py                 # loads questions.json, loads/saves leaderboard.json
-    engine.py                  # QuizEngine (selection) + Scorer (negative marking)
-    leaderboard.py             # add results, ranked top-N
-    cli.py                     # console UI with countdown timer
-    gui.py                     # optional Tkinter UI
-    exceptions.py               # custom exception hierarchy
-data/                          # created automatically on first run
-    questions.json             # seeded with 12 sample questions across 4 categories
-    leaderboard.json
+organizer_system/
+    categories.py               # extension → category mapping
+    duplicates.py               # SHA-256-based duplicate detection
+    logger.py                   # operation_log.json — records move batches for undo
+    manager.py                  # FileOrganizer: categorize / dedupe / rename / undo
+    cli.py                      # console UI
+    gui.py                      # optional Tkinter UI
+    exceptions.py                # custom exception hierarchy
+data/                           # created automatically on first run
+    operations_log.json
 ```
 
 ## Run it
 ```bash
 python main.py            # console mode
-python main.py --gui      # Tkinter GUI (requires tkinter, see below)
+python main.py --gui      # Tkinter GUI (requires tkinter — see below)
 ```
 
 If `tkinter` isn't installed, `--gui` prints a message and falls back to console mode.
-On Debian/Ubuntu, install it with `sudo apt install python3-tk`. It ships with the
-standard python.org installers on Windows and macOS.
+On Debian/Ubuntu: `sudo apt install python3-tk`. It ships with the standard python.org
+installers on Windows and macOS.
 
-## Adjusting the marking scheme
-Edit the `Scorer` defaults in `quiz_system/engine.py`:
-```python
-class Scorer:
-    def __init__(self, correct_marks=4.0, wrong_marks=-1.0, unanswered_marks=0.0):
-        ...
-```
+## How undo works
+Every mutating operation (categorize, quarantine, rename) is really just a batch of
+file **moves**, so they all share one undo mechanism: the exact `(src, dst)` pairs that
+happened are logged, and "undo" simply moves each `dst` back to its `src`, most-recent
+operation first. Only the single most recent (not-yet-undone) operation can be undone —
+there's no multi-step undo stack.
 
-## Adding your own questions
-Edit `data/questions.json` — each entry needs:
-```json
-{
-  "id": "q13",
-  "category": "Geography",
-  "question": "What is the longest river in the world?",
-  "options": ["Amazon", "Nile", "Yangtze", "Mississippi"],
-  "answer_index": 1,
-  "difficulty": "medium"
-}
-```
-`answer_index` is the 0-based index into `options` of the correct choice. New categories
-are picked up automatically — no code changes needed.
+Both the forward operations and undo use a **two-phase move** internally (rename
+everything to a private temp name first, then to the real target) so that renaming or
+restoring a batch of files never produces a surprise `" (1)"` suffix just because of
+the order files happened to be processed in.
 
-## Notes
-- Console timer: on Linux/macOS it uses `select()` on stdin, so a timed-out question never
-  leaves a dangling background thread waiting on the next keystroke. On Windows (no `select`
-  on stdin) it falls back to a daemon-thread approach; a keystroke that arrives *after* a
-  timeout on that platform is simply discarded rather than double-counted.
-- `NotEnoughQuestionsError` is raised if you ask for more questions than exist in a category.
+## Safety notes
+- Duplicates are **quarantined, never deleted** — nothing this tool does is permanently
+  destructive; everything can be undone as long as you haven't manually touched the
+  files afterward.
+- If a file that was moved has since been renamed/deleted/moved again by something
+  else, undo reports it under `"failed"` rather than raising — you get a summary of
+  what could and couldn't be restored.
+- Filename collisions during any move are resolved by appending `" (1)"`, `" (2)"`, etc.
+  — existing files are never overwritten.

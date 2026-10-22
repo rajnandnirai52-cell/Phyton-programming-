@@ -1,7 +1,7 @@
 """
-Quiz Application
------------------
-Console quiz by default; pass --gui for the optional Tkinter interface.
+File Organizer Tool
+---------------------
+Console UI by default; pass --gui for the optional Tkinter interface.
 
 Run with:
     python main.py          # console mode
@@ -14,14 +14,14 @@ import sys
 def main() -> None:
     if "--gui" in sys.argv:
         try:
-            from quiz_system.gui import main as gui_main
+            from organizer_system.gui import main as gui_main
         except ImportError:
             print("Tkinter is not available on this system. Falling back to console mode.\n")
         else:
             gui_main()
             return
 
-    from quiz_system.cli import main as cli_main
+    from organizer_system.cli import main as cli_main
     cli_main()
 
 
