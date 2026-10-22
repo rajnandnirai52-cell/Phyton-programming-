@@ -1,69 +1,94 @@
-# File Organizer Tool
+# Fake News Detection (Python, scikit-learn, NLTK, Flask/Streamlit)
 
-A Python tool that automatically organizes messy folders — console UI by
-default, optional Tkinter GUI.
+Classifies news articles as **FAKE** or **REAL** using TF-IDF features and five tuned
+machine-learning models, then serves the best one through a Flask web app (or Streamlit).
 
-## Features
-- **Automatic categorization** — sorts files into subfolders (Images, Documents,
-  Spreadsheets, Presentations, Audio, Video, Archives, Code, Executables, Others)
-  based on extension
-- **Duplicate detection** — finds files with identical content via SHA-256 hashing,
-  using a 3-stage filter (group by size → hash first 64 KB → full hash) so big folders
-  stay fast. Skips `.git`, `node_modules`, `venv`, `__pycache__` etc., ignores empty
-  files and symlinks, shows live progress, and Ctrl+C cancels safely
-- **Duplicate quarantine** — moves all but one copy of each duplicate group into a
-  `_duplicates_quarantine` folder rather than deleting them, so it's always reversible
-- **Batch rename** — rename many files at once using a pattern with placeholders:
-  `{name}`, `{ext}`, `{index}`, `{parent}`
-- **Operation log** — every categorize / quarantine / rename run is recorded with a
-  timestamp and the exact file moves it made
-- **Undo last operation** — reverses the most recent operation, move for move
-- **Optional Tkinter GUI** — folder picker, one-click actions, a rename dialog, and
-  an in-window log/undo panel
+## Quick start
 
-## Structure
-```
-main.py                        # entry point: `python main.py` or `python main.py --gui`
-organizer_system/
-    categories.py               # extension → category mapping
-    duplicates.py               # SHA-256-based duplicate detection
-    logger.py                   # operation_log.json — records move batches for undo
-    manager.py                  # FileOrganizer: categorize / dedupe / rename / undo
-    cli.py                      # console UI
-    gui.py                      # optional Tkinter UI
-    exceptions.py                # custom exception hierarchy
-data/                           # created automatically on first run
-    operations_log.json
-```
+    pip install -r requirements.txt
+    python train.py --fast                # ~1 min, small grids
+    python app.py                         # open http://127.0.0.1:5000
 
-## Run it
-```bash
-python main.py            # console mode
-python main.py --gui      # Tkinter GUI (requires tkinter — see below)
-```
+`python train.py` (no `--fast`) runs the full hyperparameter search (a few minutes).
+Alternative UI: `streamlit run streamlit_app.py`. Tests: `python -m unittest discover -s tests`.
 
-If `tkinter` isn't installed, `--gui` prints a message and falls back to console mode.
-On Debian/Ubuntu: `sudo apt install python3-tk`. It ships with the standard python.org
-installers on Windows and macOS.
+## IMPORTANT: use a real dataset
 
-## How undo works
-Every mutating operation (categorize, quarantine, rename) is really just a batch of
-file **moves**, so they all share one undo mechanism: the exact `(src, dst)` pairs that
-happened are logged, and "undo" simply moves each `dst` back to its `src`, most-recent
-operation first. Only the single most recent (not-yet-undone) operation can be undone —
-there's no multi-step undo stack.
+The project ships with a **synthetic** sample dataset (`data/sample_news.csv`, generated from
+templates by `src/sample_data.py`) so everything runs immediately. Scores on it are **not
+meaningful** for real-world news, and the web app shows a warning banner while the model was
+trained on it. For real results, download a labelled dataset and train on it:
 
-Both the forward operations and undo use a **two-phase move** internally (rename
-everything to a private temp name first, then to the real target) so that renaming or
-restoring a batch of files never produces a surprise `" (1)"` suffix just because of
-the order files happened to be processed in.
+    # Kaggle-style "Fake and Real News": Fake.csv + True.csv (columns title, text, ...)
+    python train.py --fake data/Fake.csv --real data/True.csv
 
-## Safety notes
-- Duplicates are **quarantined, never deleted** — nothing this tool does is permanently
-  destructive; everything can be undone as long as you haven't manually touched the
-  files afterward.
-- If a file that was moved has since been renamed/deleted/moved again by something
-  else, undo reports it under `"failed"` rather than raising — you get a summary of
-  what could and couldn't be restored.
-- Filename collisions during any move are resolved by appending `" (1)"`, `" (2)"`, etc.
-  — existing files are never overwritten.
+    # or one CSV with a text/title column and a label column (FAKE/REAL or 1/0)
+    python train.py --data data/news.csv
+
+Labels are accepted as FAKE/REAL, fake/real, true/false, reliable/unreliable or 1 (fake) / 0 (real).
+On the very large Kaggle file, add `--fast` or `--sample 10000` to keep training quick.
+
+**Dataset caveat:** on Kaggle's Fake/True.csv, real articles start with a "(Reuters)" tag,
+which lets models score ~99% by spotting the publisher rather than truthfulness. This project
+strips those tags (`strip_leaky_tokens`), but such datasets are still far easier than real-world
+misinformation; expect lower accuracy on articles from other sources.
+
+## How each requirement is met
+
+| Requirement | Implementation |
+|---|---|
+| **Text preprocessing** | `src/preprocessing.py`: lowercase, strip HTML/URLs/emails/handles, tokenise, **stopword removal**, **lemmatization**, **stemming** (switch with `--normalizer none|stem|lemma|both`) |
+| **TF-IDF features** | `src/features.py`: `TfidfVectorizer` (uni/bi-grams, sublinear tf, min/max df) inside a `Pipeline`, so it is re-fit in every CV fold (no leakage) |
+| **Multiple ML models** | `src/models.py`: Logistic Regression, Multinomial Naive Bayes, Linear SVM, SGD (modified Huber), Random Forest |
+| **Hyperparameter tuning** | `GridSearchCV` (5-fold stratified, scored on F1); Random Forest uses `RandomizedSearchCV`. TF-IDF settings (n-grams, vocabulary size) are tuned together with each model's own parameters |
+| **Standard metrics** | Accuracy, precision, recall, F1, ROC-AUC, confusion matrices, classification reports, ROC curves, model-comparison chart |
+| **Deployment** | `app.py` (Flask: web page + JSON API + `/health`) and `streamlit_app.py` |
+
+## What training produces
+
+- `models/best_model.joblib` - the best pipeline plus the exact preprocessing settings
+- `reports/model_comparison.csv` / `.png` - all models side by side
+- `reports/confusion_matrix_<model>.png`, `reports/roc_curves.png`
+- `reports/top_features.csv` / `top_features_<model>.png` - words that push toward FAKE or REAL
+- `reports/results.json` - best parameters and full classification reports
+- `reports/preprocessing_comparison.csv` (with `--compare-preprocessing`) - none vs stem vs lemma vs both
+
+**Method notes:** the train/test split happens *before* preprocessing and vectorising; the test set
+is used only for final reporting. The best model is chosen by **cross-validation F1**, never by test score.
+FAKE is the positive class, so precision/recall/F1 describe how well fake articles are caught.
+
+## Web API
+
+    curl -X POST http://127.0.0.1:5000/api/predict \
+         -H "Content-Type: application/json" \
+         -d '{"text": "SHOCKING truth they do not want you to know ..."}'
+
+Response: `label`, `confidence`, `probability_fake`, `words_pointing_to_fake`,
+`words_pointing_to_real`, `warning` (for very short text), `model`.
+Models without native probabilities (Linear SVM) report a sigmoid of the decision margin.
+
+## NLTK notes
+
+On first run the code tries to download NLTK's `stopwords` and `wordnet` data. If NLTK or the
+data is unavailable (e.g. offline), each step automatically falls back to a built-in
+approximation, so the project still runs. `python -c "from src.preprocessing import backend_info; print(backend_info())"`
+shows which implementation is active. To download manually: `python -m nltk.downloader stopwords wordnet omw-1.4`.
+
+## Project layout
+
+    train.py                CLI: train / tune / evaluate / save
+    app.py                  Flask app          templates/index.html
+    streamlit_app.py        Streamlit app
+    generate_sample_data.py regenerate the synthetic demo data
+    src/
+      preprocessing.py  fallback_nlp.py   data_loader.py   sample_data.py
+      features.py       models.py         evaluate.py      trainer.py     predict.py
+    tests/test_pipeline.py  21 unit/integration tests
+    data/  models/  reports/
+
+## Limitations
+
+The model learns *writing style and vocabulary* from its training data. It cannot check facts,
+does not know about events after its training data, and will be wrong on styles it has not seen.
+Use it as a learning project or a first-pass signal, never as a fact-checker. Only load
+`.joblib` model files you trained yourself.
